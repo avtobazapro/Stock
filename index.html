@@ -30,7 +30,6 @@
     button{padding:12px 14px;border:0;border-radius:12px;font-size:16px;cursor:pointer;background:var(--accent);color:var(--accentText);font-weight:600;white-space:nowrap}
     button.secondary{background:transparent;color:var(--text);border:1px solid var(--border)}
     button:disabled{opacity:.6;cursor:not-allowed}
-    .hint{margin-top:10px;color:var(--hint);font-size:12px}
     .error{color:#ef4444;margin-top:10px;font-size:13px;display:none}
     .ok{color:#16a34a;margin-top:10px;font-size:13px;display:none}
     .grid{margin-top:14px;display:grid;gap:12px;grid-template-columns:1fr;align-items:start}
@@ -63,8 +62,6 @@
       <button id="recheckBtn" class="secondary" style="display:none;">Я подписался — проверить</button>
     </div>
 
-    <div class="hint">Доступ к данным — только подписчикам @avtobazapro. VIN не содержит день/месяц выпуска.</div>
-
     <div id="msg" class="error"></div>
     <div id="okmsg" class="ok"></div>
 
@@ -80,8 +77,13 @@
 
         <table class="kv" id="table"></table>
 
+        <div class="row" id="linkBtns" style="gap:8px; margin-top:10px; display:none;">
+          <button class="secondary" id="openAdBtn">Открыть объявление</button>
+          <button class="secondary" id="copyAdBtn">Скопировать ссылку</button>
+        </div>
+
         <details style="margin-top:10px;">
-          <summary class="muted" style="cursor:pointer;">Технические детали (все поля)</summary>
+          <summary class="muted" style="cursor:pointer;">Подробности (все поля)</summary>
           <div class="mono" id="details">—</div>
         </details>
       </div>
@@ -90,7 +92,6 @@
         <div class="pdfTitle">
           <div>
             <div style="font-weight:700;">PDF</div>
-            <div class="muted" style="font-size:12px;">Отчёт avtobaza.pro</div>
           </div>
           <div class="row" style="gap:8px;margin:0;">
             <button class="secondary" id="openPdfBtn" disabled>Открыть</button>
@@ -103,10 +104,7 @@
   </div>
 
   <script>
-    // === ВСТАВЬ URL Worker без пути ===
-    // пример: "https://vin-access.<account>.workers.dev"
     const ACCESS_API_BASE = "https://vin-access.nikolay-nee.workers.dev";
-
     const CHANNEL_LINK = "https://t.me/avtobazapro";
     const LOGO_PATH = "logo.png";
 
@@ -132,6 +130,10 @@
     const downloadPdfBtn = document.getElementById('downloadPdfBtn');
     const openPdfBtn = document.getElementById('openPdfBtn');
 
+    const linkBtns = document.getElementById('linkBtns');
+    const openAdBtn = document.getElementById('openAdBtn');
+    const copyAdBtn = document.getElementById('copyAdBtn');
+
     let lastPdfBlobUrl = null;
     let lastPdfFileName = null;
     let logoDataUrlCache = null;
@@ -155,10 +157,24 @@
       if (!value || value === "Not Applicable") return '';
       return `<tr><td class="k">${label}</td><td>${escapeHtml(String(value))}</td></tr>`;
     }
-
     function showSubscribeUI(show){
       subBtn.style.display = show ? 'inline-block' : 'none';
       recheckBtn.style.display = show ? 'inline-block' : 'none';
+    }
+    function shortUrl(u){
+      try {
+        const url = new URL(u);
+        const s = (url.hostname + url.pathname);
+        return s.length > 46 ? (s.slice(0, 46) + "…") : s;
+      } catch { return (u || "").slice(0, 46) + "…"; }
+    }
+    async function copyText(text){
+      try{
+        await navigator.clipboard.writeText(text);
+        showOk("Скопировано ✅");
+      }catch{
+        showError("Не удалось скопировать.");
+      }
     }
 
     subBtn.onclick = () => {
@@ -171,7 +187,7 @@
       const s = await callAccess();
       if (s?.ok && s?.member) {
         showSubscribeUI(false);
-        showOk("Подписка подтверждена ✅ Теперь можно проверять.");
+        showOk("Подписка подтверждена ✅");
       } else {
         showSubscribeUI(true);
         showError("Подписка не найдена. Подпишись и нажми «Я подписался — проверить».");
@@ -180,8 +196,6 @@
 
     async function callAccess(){
       if (!tg?.initData) return { ok:false, member:false, error:"Откройте мини-приложение внутри Telegram." };
-      if (!ACCESS_API_BASE || ACCESS_API_BASE.includes("PASTE_WORKER")) return { ok:false, member:false, error:"Не задан ACCESS_API_BASE." };
-
       const r = await fetch(`${ACCESS_API_BASE}/access`, {
         method: "POST",
         headers: {"Content-Type":"application/json"},
@@ -191,9 +205,8 @@
     }
 
     function statusFromErrorCode(code){
-      if (!code) return {cls:'warn', text:'Данные частичные'};
-      const c = String(code).trim();
-      if (c === '0') return {cls:'ok', text:'VIN распознан'};
+      const c = String(code || '').trim();
+      if (!c || c === '0') return {cls:'ok', text:'VIN распознан'};
       return {cls:'warn', text:`Есть предупреждения (${c})`};
     }
 
@@ -217,9 +230,10 @@
     function render(decoded, source){
       const make = decoded.Make || '—';
       const model = decoded.Model || '';
-      const year = decoded.ModelYear || '';
+      const prodDate = decoded.ProductionDate || 'нет данных';
+
       titleEl.textContent = [make, model].filter(Boolean).join(' ') || make;
-      subtitleEl.textContent = [year, decoded.VehicleType].filter(Boolean).join(' • ') || '—';
+      subtitleEl.textContent = [prodDate, decoded.VehicleType].filter(Boolean).join(' • ') || '—';
 
       const st = statusFromErrorCode(decoded.ErrorCode);
       badgeEl.className = `badge ${st.cls}`;
@@ -229,10 +243,10 @@
 
       tableEl.innerHTML =
         row('VIN', decoded.VIN) +
-        (source?.url ? row('Ссылка', source.url) : '') +
+        (source?.url ? row('Ссылка', shortUrl(source.url)) : '') +
         row('Марка', decoded.Make) +
         row('Модель', decoded.Model) +
-        row('Модельный год (по базе)', decoded.ModelYear) +
+        row('Дата производства', prodDate) +
         row('Тип ТС', decoded.VehicleType) +
         row('Кузов', decoded.BodyClass) +
         row('Двигатель', engine) +
@@ -240,11 +254,19 @@
         row('Страна сборки', decoded.PlantCountry) +
         row('Завод', decoded.PlantCompanyName) +
         row('Предупреждение', decoded.ErrorText) +
-        row('Рекомендуемый VIN (NHTSA)', decoded.SuggestedVIN) +
+        row('Рекомендуемый VIN (по версии NHTSA)', decoded.SuggestedVIN) +
         row('Возможные значения', decoded.PossibleValues);
 
       detailsEl.textContent = JSON.stringify(decoded._raw || decoded, null, 2);
       grid.style.display = 'grid';
+
+      if (source?.url) {
+        linkBtns.style.display = 'flex';
+        openAdBtn.onclick = () => (tg?.openLink ? tg.openLink(source.url) : window.open(source.url, '_blank'));
+        copyAdBtn.onclick = () => copyText(source.url);
+      } else {
+        linkBtns.style.display = 'none';
+      }
     }
 
     async function buildPdf(decoded, source){
@@ -253,9 +275,8 @@
 
       const now = new Date();
       const dt = now.toLocaleString('ru-RU');
-      lastPdfFileName = `avtobaza_pro_VIN_${decoded.VIN}.pdf`;
+      lastPdfFileName = `VIN_${decoded.VIN}.pdf`;
 
-      const st = statusFromErrorCode(decoded.ErrorCode);
       const logo = await loadLogoDataUrl();
 
       const rowsMain = [
@@ -263,7 +284,7 @@
         ...(source?.url ? [['Ссылка', source.url]] : []),
         ['Марка', decoded.Make],
         ['Модель', decoded.Model],
-        ['Модельный год (по базе)', decoded.ModelYear],
+        ['Дата производства', decoded.ProductionDate || 'нет данных'],
         ['Тип ТС', decoded.VehicleType],
         ['Кузов', decoded.BodyClass],
         ['Двигатель', decoded.EngineModel || decoded.EngineDisplacementL],
@@ -273,7 +294,7 @@
       ].filter(([_, v]) => v && v !== 'Not Applicable');
 
       const rowsTech = [
-        ['Рекомендуемый VIN (NHTSA)', decoded.SuggestedVIN],
+        ['Рекомендуемый VIN (по версии NHTSA)', decoded.SuggestedVIN],
         ['Возможные значения', decoded.PossibleValues],
       ].filter(([_, v]) => v && v !== 'Not Applicable');
 
@@ -284,14 +305,12 @@
             columns: [
               logo ? { image: logo, width: 120 } : { text: 'AVTOBAZA.PRO', bold:true, fontSize:16 },
               { stack: [
-                  { text: 'avtobaza.pro', fontSize:10, color:'#666', alignment:'right' },
                   { text: dt, fontSize:10, color:'#666', alignment:'right' }
                 ]
               }
             ]
           },
-          { text: 'Отчёт по расшифровке VIN', fontSize:14, bold:true, margin:[0,12,0,6] },
-          { text: `Статус: ${st.text}`, fontSize:10, color: st.cls==='ok' ? '#16a34a' : '#b45309' },
+          { text: 'Расшифровка VIN', fontSize:14, bold:true, margin:[0,12,0,6] },
           { text: 'Основные данные', fontSize:12, bold:true, margin:[0,14,0,8] },
           {
             table: { widths:[170,'*'], body: rowsMain.map(([k,v]) => ([{text:String(k),fontSize:10,color:'#666'},{text:String(v??'—'),fontSize:11}])) },
@@ -308,8 +327,6 @@
             { text: 'Комментарий', fontSize:12, bold:true, margin:[0,14,0,6] },
             { text: String(decoded.ErrorText), fontSize:10 }
           ] : []),
-          { text: 'Примечание: VIN не содержит точную дату (день/месяц) выпуска — только модельный год.', fontSize:9, color:'#666', margin:[0,14,0,0] },
-          { text: 'Источник: NHTSA vPIC', fontSize:9, color:'#666', margin:[0,6,0,0] },
         ],
         defaultStyle: { fontSize: 11 }
       };
@@ -348,10 +365,9 @@
       openPdfBtn.disabled = true;
 
       const input = (inputEl.value || '').trim();
-      if (!input) { showError("Введите VIN или ссылку Encar."); return; }
+      if (!input) { showError("Введите VIN или ссылку."); return; }
 
       if (!tg?.initData) { showError("Открой мини-приложение внутри Telegram."); return; }
-      if (!ACCESS_API_BASE || ACCESS_API_BASE.includes("PASTE_WORKER")) { showError("Не задан ACCESS_API_BASE."); return; }
 
       setLoading(true);
       try{
@@ -364,7 +380,7 @@
 
         if (j?.ok && j?.error === "NOT_SUBSCRIBER") {
           showSubscribeUI(true);
-          showError("Чтобы увидеть данные, нужно быть подписчиком @avtobazapro. Подпишись и нажми «Я подписался — проверить».");
+          showError("Чтобы увидеть данные, нужно быть подписчиком @avtobazapro.");
           return;
         }
 
@@ -375,10 +391,8 @@
         }
 
         showSubscribeUI(false);
-        const decoded = j.decoded;
-        const source = j.source;
-        render(decoded, source);
-        await buildPdf(decoded, source);
+        render(j.decoded, j.source);
+        await buildPdf(j.decoded, j.source);
 
       } catch (e){
         showError("Ошибка сети/сервера. Проверь Worker и BOT_TOKEN.");
