@@ -6,8 +6,6 @@
   <title>Расшифровка VIN</title>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-
-  <!-- PDF (кириллица ок) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/pdfmake.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.9/vfs_fonts.min.js"></script>
 
@@ -59,13 +57,13 @@
     <h1>Расшифровка VIN</h1>
 
     <div class="row">
-      <input id="vin" placeholder="Введите VIN (17 символов)" maxlength="17" autocomplete="off" />
+      <input id="input" placeholder="VIN (17) или ссылка Encar" autocomplete="off" />
       <button id="btn">Проверить</button>
       <button id="subBtn" class="secondary" style="display:none;">Подписаться</button>
       <button id="recheckBtn" class="secondary" style="display:none;">Я подписался — проверить</button>
     </div>
 
-    <div class="hint"></div>
+    <div class="hint">Доступ к данным — только подписчикам @avtobazapro. VIN не содержит день/месяц выпуска.</div>
 
     <div id="msg" class="error"></div>
     <div id="okmsg" class="ok"></div>
@@ -92,7 +90,7 @@
         <div class="pdfTitle">
           <div>
             <div style="font-weight:700;">PDF</div>
-            <div class="muted" style="font-size:12px;">Готово</div>
+            <div class="muted" style="font-size:12px;">Отчёт avtobaza.pro</div>
           </div>
           <div class="row" style="gap:8px;margin:0;">
             <button class="secondary" id="openPdfBtn" disabled>Открыть</button>
@@ -105,23 +103,20 @@
   </div>
 
   <script>
-    // === ВСТАВЬ сюда URL твоего Cloudflare Worker ===
-    // Пример: const ACCESS_API = "https://vin-access.yourname.workers.dev";
-    const ACCESS_API = "https://vin-access.nikolay-nee.workers.dev/";
+    // === ВСТАВЬ URL Worker без пути ===
+    // пример: "https://vin-access.<account>.workers.dev"
+    const ACCESS_API_BASE = "https://vin-access.nikolay-nee.workers.dev";
 
     const CHANNEL_LINK = "https://t.me/avtobazapro";
-
-    // Логотип должен лежать в репозитории рядом с index.html
     const LOGO_PATH = "logo.png";
 
     const tg = window.Telegram?.WebApp;
     if (tg) tg.expand();
 
-    const vinEl = document.getElementById('vin');
+    const inputEl = document.getElementById('input');
     const btn = document.getElementById('btn');
     const msg = document.getElementById('msg');
     const okmsg = document.getElementById('okmsg');
-
     const subBtn = document.getElementById('subBtn');
     const recheckBtn = document.getElementById('recheckBtn');
 
@@ -137,11 +132,8 @@
     const downloadPdfBtn = document.getElementById('downloadPdfBtn');
     const openPdfBtn = document.getElementById('openPdfBtn');
 
-    const vinRe = /^[A-HJ-NPR-Z0-9]{17}$/; // без I,O,Q
     let lastPdfBlobUrl = null;
     let lastPdfFileName = null;
-
-    // кеш для логотипа (dataURL)
     let logoDataUrlCache = null;
 
     function showError(text){
@@ -158,7 +150,6 @@
       btn.disabled = isLoading;
       btn.textContent = isLoading ? 'Проверяю…' : 'Проверить';
     }
-    function cleanVin(v){ return (v || '').trim().toUpperCase().replace(/\s+/g,''); }
     function escapeHtml(s){ return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
     function row(label, value){
       if (!value || value === "Not Applicable") return '';
@@ -177,36 +168,26 @@
 
     recheckBtn.onclick = async () => {
       showError('');
-      const s = await checkSubscription();
-      if (s.ok && s.member) {
+      const s = await callAccess();
+      if (s?.ok && s?.member) {
         showSubscribeUI(false);
-        showOk("Подписка подтверждена ✅ Теперь можно проверять VIN.");
+        showOk("Подписка подтверждена ✅ Теперь можно проверять.");
       } else {
         showSubscribeUI(true);
-        showError("Подписка не найдена. Подпишись на канал и нажми «Я подписался — проверить».");
+        showError("Подписка не найдена. Подпишись и нажми «Я подписался — проверить».");
       }
     };
 
-    async function checkSubscription(){
-      if (!tg?.initData) {
-        return { ok:false, member:false, error:"Откройте мини-приложение внутри Telegram." };
-      }
-      if (!ACCESS_API || ACCESS_API.includes("PASTE_YOUR_WORKER_URL_HERE")) {
-        return { ok:false, member:false, error:"Не задан ACCESS_API (URL Worker)." };
-      }
-      const r = await fetch(ACCESS_API, {
+    async function callAccess(){
+      if (!tg?.initData) return { ok:false, member:false, error:"Откройте мини-приложение внутри Telegram." };
+      if (!ACCESS_API_BASE || ACCESS_API_BASE.includes("PASTE_WORKER")) return { ok:false, member:false, error:"Не задан ACCESS_API_BASE." };
+
+      const r = await fetch(`${ACCESS_API_BASE}/access`, {
         method: "POST",
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify({ initData: tg.initData })
       });
       return await r.json();
-    }
-
-    async function fetchValuesExtended(vin){
-      const url = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/${vin}?format=json`;
-      const r = await fetch(url);
-      const j = await r.json();
-      return (j.Results && j.Results[0]) ? j.Results[0] : null;
     }
 
     function statusFromErrorCode(code){
@@ -216,64 +197,10 @@
       return {cls:'warn', text:`Есть предупреждения (${c})`};
     }
 
-    function normalize(vin, x){
-      return {
-        VIN: vin,
-        Make: x?.Make || null,
-        Model: x?.Model || null,
-        ModelYear: x?.ModelYear || null,
-        VehicleType: x?.VehicleType || null,
-        BodyClass: x?.BodyClass || null,
-        EngineModel: x?.EngineModel || null,
-        EngineDisplacementL: x?.DisplacementL || x?.EngineDisplacementL || null,
-        TransmissionStyle: x?.TransmissionStyle || null,
-        PlantCountry: x?.PlantCountry || null,
-        PlantCompanyName: x?.PlantCompanyName || null,
-        ErrorCode: x?.ErrorCode || null,
-        ErrorText: x?.ErrorText || null,
-        SuggestedVIN: x?.SuggestedVIN || null,
-        PossibleValues: x?.PossibleValues || null,
-        AdditionalErrorText: x?.AdditionalErrorText || null
-      };
-    }
-
-    function render(data){
-      const make = data.Make || '—';
-      const model = data.Model || '';
-      const year = data.ModelYear || '';
-      titleEl.textContent = [make, model].filter(Boolean).join(' ') || make;
-      subtitleEl.textContent = [year, data.VehicleType].filter(Boolean).join(' • ') || '—';
-
-      const st = statusFromErrorCode(data.ErrorCode);
-      badgeEl.className = `badge ${st.cls}`;
-      badgeEl.textContent = st.text;
-
-      const engine = data.EngineModel || data.EngineDisplacementL || null;
-
-      // ОСТАВЛЯЕМ Suggested/Possible, но делаем русские названия
-      tableEl.innerHTML =
-        row('VIN', data.VIN) +
-        row('Марка', data.Make) +
-        row('Модель', data.Model) +
-        row('Год', data.ModelYear) +
-        row('Тип ТС', data.VehicleType) +
-        row('Кузов', data.BodyClass) +
-        row('Двигатель', engine) +
-        row('Коробка', data.TransmissionStyle) +
-        row('Страна сборки', data.PlantCountry) +
-        row('Завод', data.PlantCompanyName) +
-        row('Предупреждение', data.ErrorText) +
-        row('Рекомендуемый VIN (по версии NHTSA)', data.SuggestedVIN) +
-        row('Возможные значения (для спорных позиций)', data.PossibleValues);
-
-      detailsEl.textContent = JSON.stringify(data, null, 2);
-      grid.style.display = 'grid';
-    }
-
     async function loadLogoDataUrl(){
       if (logoDataUrlCache) return logoDataUrlCache;
       try{
-        const r = await fetch(LOGO_PATH, { cache: "no-store" });
+        const r = await fetch(LOGO_PATH, { cache:"no-store" });
         if (!r.ok) return null;
         const blob = await r.blob();
         const dataUrl = await new Promise((resolve) => {
@@ -284,138 +211,112 @@
         });
         logoDataUrlCache = dataUrl;
         return dataUrl;
-      }catch{
-        return null;
-      }
+      }catch{ return null; }
     }
 
-    async function buildPdf(data){
+    function render(decoded, source){
+      const make = decoded.Make || '—';
+      const model = decoded.Model || '';
+      const year = decoded.ModelYear || '';
+      titleEl.textContent = [make, model].filter(Boolean).join(' ') || make;
+      subtitleEl.textContent = [year, decoded.VehicleType].filter(Boolean).join(' • ') || '—';
+
+      const st = statusFromErrorCode(decoded.ErrorCode);
+      badgeEl.className = `badge ${st.cls}`;
+      badgeEl.textContent = st.text;
+
+      const engine = decoded.EngineModel || decoded.EngineDisplacementL || null;
+
+      tableEl.innerHTML =
+        row('VIN', decoded.VIN) +
+        (source?.url ? row('Ссылка', source.url) : '') +
+        row('Марка', decoded.Make) +
+        row('Модель', decoded.Model) +
+        row('Модельный год (по базе)', decoded.ModelYear) +
+        row('Тип ТС', decoded.VehicleType) +
+        row('Кузов', decoded.BodyClass) +
+        row('Двигатель', engine) +
+        row('Коробка', decoded.TransmissionStyle) +
+        row('Страна сборки', decoded.PlantCountry) +
+        row('Завод', decoded.PlantCompanyName) +
+        row('Предупреждение', decoded.ErrorText) +
+        row('Рекомендуемый VIN (NHTSA)', decoded.SuggestedVIN) +
+        row('Возможные значения', decoded.PossibleValues);
+
+      detailsEl.textContent = JSON.stringify(decoded._raw || decoded, null, 2);
+      grid.style.display = 'grid';
+    }
+
+    async function buildPdf(decoded, source){
       if (lastPdfBlobUrl) URL.revokeObjectURL(lastPdfBlobUrl);
       lastPdfBlobUrl = null;
 
-      const brand = "avtobaza.pro";
       const now = new Date();
       const dt = now.toLocaleString('ru-RU');
-      lastPdfFileName = `avtobaza_pro_VIN_${data.VIN}.pdf`;
+      lastPdfFileName = `avtobaza_pro_VIN_${decoded.VIN}.pdf`;
 
-      const st = statusFromErrorCode(data.ErrorCode);
-      const logo = await loadLogoDataUrl(); // может быть null — тогда просто без лого
+      const st = statusFromErrorCode(decoded.ErrorCode);
+      const logo = await loadLogoDataUrl();
 
       const rowsMain = [
-        ['VIN', data.VIN],
-        ['Марка', data.Make],
-        ['Модель', data.Model],
-        ['Год выпуска', data.ModelYear],
-        ['Тип ТС', data.VehicleType],
-        ['Кузов', data.BodyClass],
-        ['Двигатель', data.EngineModel || data.EngineDisplacementL],
-        ['Коробка', data.TransmissionStyle],
-        ['Страна сборки', data.PlantCountry],
-        ['Завод', data.PlantCompanyName],
+        ['VIN', decoded.VIN],
+        ...(source?.url ? [['Ссылка', source.url]] : []),
+        ['Марка', decoded.Make],
+        ['Модель', decoded.Model],
+        ['Модельный год (по базе)', decoded.ModelYear],
+        ['Тип ТС', decoded.VehicleType],
+        ['Кузов', decoded.BodyClass],
+        ['Двигатель', decoded.EngineModel || decoded.EngineDisplacementL],
+        ['Коробка', decoded.TransmissionStyle],
+        ['Страна сборки', decoded.PlantCountry],
+        ['Завод', decoded.PlantCompanyName],
       ].filter(([_, v]) => v && v !== 'Not Applicable');
 
       const rowsTech = [
-        ['Рекомендуемый VIN (NHTSA)', data.SuggestedVIN],
-        ['Возможные значения', data.PossibleValues],
+        ['Рекомендуемый VIN (NHTSA)', decoded.SuggestedVIN],
+        ['Возможные значения', decoded.PossibleValues],
       ].filter(([_, v]) => v && v !== 'Not Applicable');
-
-      const headerLeft = logo
-        ? { image: logo, width: 120 }
-        : { text: 'AVTOBAZA.PRO', style: 'brand' };
 
       const docDefinition = {
         pageMargins: [40, 45, 40, 45],
         content: [
           {
             columns: [
-              headerLeft,
-              {
-                stack: [
-                  { text: brand, style: 'brandSmall', alignment: 'right' },
-                  { text: dt, style: 'date', alignment: 'right' },
+              logo ? { image: logo, width: 120 } : { text: 'AVTOBAZA.PRO', bold:true, fontSize:16 },
+              { stack: [
+                  { text: 'avtobaza.pro', fontSize:10, color:'#666', alignment:'right' },
+                  { text: dt, fontSize:10, color:'#666', alignment:'right' }
                 ]
               }
             ]
           },
-
-          { text: 'Отчёт по расшифровке VIN', style: 'title', margin: [0, 12, 0, 6] },
-          { text: `Статус: ${st.text}`, style: st.cls === 'ok' ? 'statusOk' : 'statusWarn' },
-
-          { text: 'Основные данные', style: 'section', margin: [0, 14, 0, 8] },
+          { text: 'Отчёт по расшифровке VIN', fontSize:14, bold:true, margin:[0,12,0,6] },
+          { text: `Статус: ${st.text}`, fontSize:10, color: st.cls==='ok' ? '#16a34a' : '#b45309' },
+          { text: 'Основные данные', fontSize:12, bold:true, margin:[0,14,0,8] },
           {
-            table: {
-              widths: [170, '*'],
-              body: rowsMain.map(([k, v]) => ([
-                { text: String(k), style:'k' },
-                { text: String(v ?? '—'), style:'v' }
-              ]))
-            },
-            layout: {
-              hLineColor: () => '#E6E6E6',
-              vLineColor: () => '#E6E6E6',
-              paddingLeft: () => 8,
-              paddingRight: () => 8,
-              paddingTop: () => 6,
-              paddingBottom: () => 6,
-            }
+            table: { widths:[170,'*'], body: rowsMain.map(([k,v]) => ([{text:String(k),fontSize:10,color:'#666'},{text:String(v??'—'),fontSize:11}])) },
+            layout: 'lightHorizontalLines'
           },
-
           ...(rowsTech.length ? [
-            { text: 'Диагностика VIN (NHTSA)', style: 'section', margin: [0, 14, 0, 8] },
+            { text: 'Диагностика VIN (NHTSA)', fontSize:12, bold:true, margin:[0,14,0,8] },
             {
-              table: {
-                widths: [170, '*'],
-                body: rowsTech.map(([k, v]) => ([
-                  { text: String(k), style:'k' },
-                  { text: String(v ?? '—'), style:'v' }
-                ]))
-              },
-              layout: {
-                hLineColor: () => '#E6E6E6',
-                vLineColor: () => '#E6E6E6',
-                paddingLeft: () => 8,
-                paddingRight: () => 8,
-                paddingTop: () => 6,
-                paddingBottom: () => 6,
-              }
+              table: { widths:[170,'*'], body: rowsTech.map(([k,v]) => ([{text:String(k),fontSize:10,color:'#666'},{text:String(v??'—'),fontSize:11}])) },
+              layout: 'lightHorizontalLines'
             }
           ] : []),
-
-          ...(data.ErrorText ? [{
-            text: 'Комментарий',
-            style: 'section',
-            margin: [0, 14, 0, 6]
-          },{
-            text: String(data.ErrorText),
-            style: 'note'
-          }] : []),
-
-          {
-            text: 'Источник: NHTSA vPIC (DecodeVinValuesExtended)',
-            style: 'footer',
-            margin: [0, 18, 0, 0]
-          }
+          ...(decoded.ErrorText ? [
+            { text: 'Комментарий', fontSize:12, bold:true, margin:[0,14,0,6] },
+            { text: String(decoded.ErrorText), fontSize:10 }
+          ] : []),
+          { text: 'Примечание: VIN не содержит точную дату (день/месяц) выпуска — только модельный год.', fontSize:9, color:'#666', margin:[0,14,0,0] },
+          { text: 'Источник: NHTSA vPIC', fontSize:9, color:'#666', margin:[0,6,0,0] },
         ],
-        styles: {
-          brand: { fontSize: 16, bold: true },
-          brandSmall: { fontSize: 10, color: '#666666' },
-          date: { fontSize: 10, color: '#666666' },
-          title: { fontSize: 14, bold: true },
-          section: { fontSize: 12, bold: true },
-          k: { fontSize: 10, color: '#666666' },
-          v: { fontSize: 11 },
-          note: { fontSize: 10, color: '#111111' },
-          statusOk: { fontSize: 10, color: '#16a34a', margin: [0, 2, 0, 0] },
-          statusWarn: { fontSize: 10, color: '#b45309', margin: [0, 2, 0, 0] },
-          footer: { fontSize: 9, color: '#666666' }
-        },
         defaultStyle: { fontSize: 11 }
       };
 
       pdfMake.createPdf(docDefinition).getBlob((blob) => {
         lastPdfBlobUrl = URL.createObjectURL(blob);
         pdfFrame.src = lastPdfBlobUrl;
-
         pdfBox.style.display = 'block';
         downloadPdfBtn.disabled = false;
         openPdfBtn.disabled = false;
@@ -446,34 +347,41 @@
       downloadPdfBtn.disabled = true;
       openPdfBtn.disabled = true;
 
-      const vin = cleanVin(vinEl.value);
-      vinEl.value = vin;
+      const input = (inputEl.value || '').trim();
+      if (!input) { showError("Введите VIN или ссылку Encar."); return; }
 
-      if (!vinRe.test(vin)){
-        showError('VIN должен быть 17 символов (без I, O, Q).');
-        return;
-      }
+      if (!tg?.initData) { showError("Открой мини-приложение внутри Telegram."); return; }
+      if (!ACCESS_API_BASE || ACCESS_API_BASE.includes("PASTE_WORKER")) { showError("Не задан ACCESS_API_BASE."); return; }
 
       setLoading(true);
-
       try{
-        // 1) Проверяем подписку
-        const s = await checkSubscription();
-        if (!(s.ok && s.member)) {
+        const r = await fetch(`${ACCESS_API_BASE}/decode`, {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ initData: tg.initData, input })
+        });
+        const j = await r.json();
+
+        if (j?.ok && j?.error === "NOT_SUBSCRIBER") {
           showSubscribeUI(true);
-          showError("Чтобы увидеть данные, нужно быть подписчиком @avtobazapro. Нажми «Подписаться», затем «Я подписался — проверить».");
+          showError("Чтобы увидеть данные, нужно быть подписчиком @avtobazapro. Подпишись и нажми «Я подписался — проверить».");
           return;
         }
+
+        if (j?.error) {
+          showSubscribeUI(false);
+          showError(j.message || "Ошибка запроса.");
+          return;
+        }
+
         showSubscribeUI(false);
+        const decoded = j.decoded;
+        const source = j.source;
+        render(decoded, source);
+        await buildPdf(decoded, source);
 
-        // 2) Тянем данные по VIN
-        const raw = await fetchValuesExtended(vin);
-        const data = normalize(vin, raw);
-
-        render(data);
-        await buildPdf(data);
       } catch (e){
-        showError('Ошибка. Проверь ACCESS_API (Worker URL), BOT_TOKEN и что бот админ в канале.');
+        showError("Ошибка сети/сервера. Проверь Worker и BOT_TOKEN.");
         console.error(e);
       } finally {
         setLoading(false);
@@ -481,7 +389,7 @@
     }
 
     btn.addEventListener('click', onSearch);
-    vinEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') onSearch(); });
+    inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') onSearch(); });
   </script>
 </body>
 </html>
